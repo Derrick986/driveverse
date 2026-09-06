@@ -29,7 +29,7 @@ targets:
       - path: DriveVerse
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.derrick986.driveverse
+        PRODUCT_BUNDLE_IDENTIFIER: com.derrick986.driveverse2
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     info:
@@ -75,7 +75,7 @@ targets:
       - path: DriveVerse/LiveActivity/LyricsAttributes.swift
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.derrick986.driveverse.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.derrick986.driveverse2.widgets
     info:
       path: DriveVerseWidgets/Info.plist
       properties:
