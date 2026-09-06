@@ -41,6 +41,49 @@ final class LiveActivityController {
     /// hold the activity (pause glyph) instead of ending it after the grace
     /// period, because a fresh start would need the foreground.
     var holdWhilePaused = false
+    // MARK: - Diagnostics
+
+    private(set) var lastStartResult = "Not attempted yet"
+
+    var diagnosticSummary: String {
+        let auth = ActivityAuthorizationInfo()
+        let activities = Activity<LyricsAttributes>.activities
+
+        let states: String
+
+        if activities.isEmpty {
+            states = "none"
+        } else {
+            states = activities.map { activity in
+                "\(String(activity.id.prefix(8))): \(Self.stateName(activity.activityState))"
+            }
+            .joined(separator: ", ")
+        }
+
+        return """
+        Live Activities Enabled: \(auth.areActivitiesEnabled ? "YES" : "NO")
+        More Frequent Updates: \(auth.frequentPushesEnabled ? "YES" : "NO")
+        Controller Active: \(isActive ? "YES" : "NO")
+        System Activities: \(activities.count)
+        Activity States: \(states)
+        Last Start Result: \(lastStartResult)
+        """
+    }
+
+    private static func stateName(_ state: ActivityState) -> String {
+        switch state {
+        case .active:
+            return "active"
+        case .ended:
+            return "ended"
+        case .dismissed:
+            return "dismissed"
+        case .stale:
+            return "stale"
+        @unknown default:
+            return "unknown"
+        }
+    }
 
     init() {
         // Clean up activities orphaned by a previous app termination.
@@ -125,7 +168,18 @@ final class LiveActivityController {
     /// to. The intent path may run before any music plays; the placeholder
     /// content matters because a background app can only *update* from then on.
     func beginSession(state: NowPlayingState?, position: LyricsPosition?) {
-        guard activity == nil, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        if activity != nil {
+            lastStartResult = "Skipped: controller already has an activity"
+            return
+        }
+
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            lastStartResult = "BLOCKED: Live Activities are disabled by iOS"
+            return
+        }
+
+        lastStartResult = "Attempting Activity.request..."
+
         let content = state.map { Self.content(state: $0, position: position) }
             ?? LyricsAttributes.ContentState(
                 title: "DriveVerse", artist: "", sourceName: "",
@@ -138,6 +192,8 @@ final class LiveActivityController {
                 content: ActivityContent(state: content, staleDate: nil)
             )
             activity = requested
+            lastStartResult = "SUCCESS: \(requested.id) | state=\(Self.stateName(requested.activityState))"
+
             watch(requested)
             throttle.noteSent(now: Date())
             if let state {
@@ -154,7 +210,14 @@ final class LiveActivityController {
                 policy.reset()
             }
         } catch {
-            Self.log.error("Activity.request failed: \(error.localizedDescription, privacy: .public)")
+            let detailedError = "\(String(reflecting: error)) | \(error.localizedDescription)"
+
+            lastStartResult = "ERROR: \(detailedError)"
+
+            Self.log.error(
+                "Activity.request failed: \(error.localizedDescription, privacy: .public)"
+            )
+
             activity = nil
         }
     }
