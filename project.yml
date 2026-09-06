@@ -80,6 +80,7 @@ targets:
       path: DriveVerseWidgets/Info.plist
       properties:
         CFBundleDisplayName: DriveVerse Lyrics
+        NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
