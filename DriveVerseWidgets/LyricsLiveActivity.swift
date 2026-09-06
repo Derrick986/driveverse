@@ -7,6 +7,7 @@ import ActivityKit
 struct DriveVerseWidgetsBundle: WidgetBundle {
     var body: some Widget {
         LyricsLiveActivity()
+        DriveVerseTestWidget()
     }
 }
 
@@ -139,4 +140,62 @@ struct LockScreenLyricsView: View {
         .padding(14)
     }
 }
+
+struct DriveVerseTestEntry: TimelineEntry {
+    let date: Date
+}
+
+struct DriveVerseTestProvider: TimelineProvider {
+    func placeholder(in context: Context) -> DriveVerseTestEntry {
+        DriveVerseTestEntry(date: Date())
+    }
+
+    func getSnapshot(
+        in context: Context,
+        completion: @escaping (DriveVerseTestEntry) -> Void
+    ) {
+        completion(DriveVerseTestEntry(date: Date()))
+    }
+
+    func getTimeline(
+        in context: Context,
+        completion: @escaping (Timeline<DriveVerseTestEntry>) -> Void
+    ) {
+        let entry = DriveVerseTestEntry(date: Date())
+
+        completion(
+            Timeline(
+                entries: [entry],
+                policy: .never
+            )
+        )
+    }
+}
+
+struct DriveVerseTestWidget: Widget {
+    let kind = "DriveVerseTestWidget"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(
+            kind: kind,
+            provider: DriveVerseTestProvider()
+        ) { entry in
+            VStack(spacing: 8) {
+                Image(systemName: "music.note")
+                    .font(.title)
+
+                Text("DriveVerse")
+                    .font(.headline)
+
+                Text("Widget OK")
+                    .font(.caption)
+            }
+            .containerBackground(.fill.tertiary, for: .widget)
+        }
+        .configurationDisplayName("DriveVerse Test")
+        .description("Tests whether the widget extension is registered.")
+        .supportedFamilies([.systemSmall])
+    }
+}
+
 #endif
