@@ -11,7 +11,7 @@ struct HomeView: View {
                     LyricPreviewCard()
                     SpotifySection()
                     DriveModeCard()
-                    LiveActivityDiagnosticCard()
+            
                     if model.appleMusicAuth == .denied {
                         InfoBanner(
                             symbol: "exclamationmark.triangle",
@@ -199,52 +199,6 @@ private struct DriveModeCard: View {
         }
         .padding()
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 16))
-    }
-}
-
-// MARK: - Live Activity Diagnostics
-
-private struct LiveActivityDiagnosticCard: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(
-                "Live Activity Diagnostics",
-                systemImage: "stethoscope"
-            )
-            .font(.headline)
-
-            Text(model.liveActivityDiagnostic)
-                .font(.system(.footnote, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-
-            HStack {
-                Button("Refresh") {
-                    model.refreshLiveActivityDiagnostics()
-                }
-                .buttonStyle(.bordered)
-
-                Button("Force Start Test") {
-                    model.forceStartLiveActivityDiagnostics()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-
-            Text("Force Start directly tests Activity.request().")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(
-            .quaternary.opacity(0.5),
-            in: RoundedRectangle(cornerRadius: 16)
-        )
-        .onAppear {
-            model.refreshLiveActivityDiagnostics()
-        }
     }
 }
 

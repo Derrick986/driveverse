@@ -39,7 +39,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var spotifyNeedsReconnect = false
     @Published var errorMessage: String?
 
-    @Published private(set) var liveActivityDiagnostic = "Tap Force Start Test"
     @Published var driveMode = false {
         didSet {
 #if os(iOS)
@@ -166,29 +165,6 @@ final class AppModel: ObservableObject {
         Task { await liveActivity.endNow() }
 #endif
     }
-
-// MARK: Live Activity Diagnostics
-
-func refreshLiveActivityDiagnostics() {
-#if os(iOS) && canImport(ActivityKit)
-    liveActivityDiagnostic = liveActivity.diagnosticSummary
-#else
-    liveActivityDiagnostic = "ActivityKit unavailable on this platform"
-#endif
-}
-
-func forceStartLiveActivityDiagnostics() {
-#if os(iOS) && canImport(ActivityKit)
-    liveActivity.beginSession(
-        state: nowPlaying,
-        position: position
-    )
-
-    liveActivityDiagnostic = liveActivity.diagnosticSummary
-#else
-    liveActivityDiagnostic = "ActivityKit unavailable on this platform"
-#endif
-}
 
     // MARK: Actions
 

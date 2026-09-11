@@ -18,7 +18,7 @@ struct LyricsPosition: Equatable {
 /// The clock is injected so every code path is unit-testable.
 final class SyncEngine {
     static let seekThresholdMs = 2000
-    static let tickInterval: TimeInterval = 0.5
+    static let tickInterval: TimeInterval = 0.25
 
     var now: () -> Date
     private(set) var anchor: NowPlayingState?
