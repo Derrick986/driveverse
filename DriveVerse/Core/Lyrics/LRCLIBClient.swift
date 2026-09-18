@@ -41,23 +41,84 @@ struct LRCLIBClient {
     /// Fallback chain per CLAUDE.md §4.7:
     /// `/api/get` with album → `/api/get` without album → `/api/search`
     /// (best result = duration within ±3 s and normalized title match).
-    func fetchLyrics(title: String, artist: String, album: String?, durationMs: Int?) async throws -> LyricsFetchResult {
+    func fetchLyrics(
+        title: String,
+        artist: String,
+        album: String?,
+        durationMs: Int?
+    ) async throws -> LyricsFetchResult {
+
         let normTitle = LyricsMatcher.normalizeTitle(title)
         let normArtist = LyricsMatcher.normalizeArtist(artist)
-        let normAlbum = album.map { LyricsMatcher.normalizeTitle($0) }
-        let durationSec = durationMs.map { Int((Double($0) / 1000).rounded()) }
 
-        if let hit = try await get(track: normTitle, artist: normArtist, album: normAlbum, duration: durationSec) {
-            return Self.result(from: hit)
+        let normAlbum = album.map {
+            LyricsMatcher.normalizeTitle($0)
         }
-        if normAlbum != nil,
-           let hit = try await get(track: normTitle, artist: normArtist, album: nil, duration: durationSec) {
-            return Self.result(from: hit)
+
+        let durationSec = durationMs.map {
+            Int((Double($0) / 1000).rounded())
         }
-        let candidates = try await search(track: normTitle, artist: normArtist)
-        if let best = LyricsMatcher.bestMatch(from: candidates, title: title, durationMs: durationMs) {
+
+        var candidates: [LRCLIBResponse] = []
+
+        // 1. Keep LRCLIB's metadata lookup as one candidate,
+        // but DO NOT immediately trust it anymore.
+        if let exact = try await get(
+            track: normTitle,
+            artist: normArtist,
+            album: normAlbum,
+            duration: durationSec
+        ) {
+            candidates.append(exact)
+        }
+
+        // 2. Always search for alternative versions.
+        // Use the original Apple Music metadata first so remix/version
+        // information is not discarded unnecessarily.
+        do {
+            let searchResults = try await search(
+                track: title,
+                artist: artist
+            )
+
+            candidates.append(
+                contentsOf: searchResults
+            )
+        } catch {
+            // If /search temporarily fails but /get succeeded,
+            // we can still continue with the exact candidate.
+            if candidates.isEmpty {
+                throw error
+            }
+        }
+
+        // 3. If nothing was found, try the old relaxed metadata lookup.
+        if candidates.isEmpty,
+           normAlbum != nil,
+           let relaxed = try await get(
+                track: normTitle,
+                artist: normArtist,
+                album: nil,
+                duration: durationSec
+           ) {
+
+            candidates.append(relaxed)
+        }
+
+        // 4. Remove duplicate LRCLIB records.
+        candidates = Self.deduplicated(candidates)
+
+        // 5. Score every candidate instead of trusting the first one.
+        if let best = LyricsMatcher.bestMatch(
+            from: candidates,
+            title: title,
+            artist: artist,
+            album: album,
+            durationMs: durationMs
+        ) {
             return Self.result(from: best)
         }
+
         return .notFound
     }
 
@@ -66,6 +127,37 @@ struct LRCLIBClient {
         if let synced = response.syncedLyrics, !synced.isEmpty { return .synced(synced) }
         if let plain = response.plainLyrics, !plain.isEmpty { return .plain(plain) }
         return .notFound
+    }
+
+    private static func deduplicated(
+        _ candidates: [LRCLIBResponse]
+    ) -> [LRCLIBResponse] {
+
+        var seen = Set<String>()
+        var result: [LRCLIBResponse] = []
+
+        for candidate in candidates {
+
+            let key: String
+
+            if let id = candidate.id {
+                key = "id:\(id)"
+            } else {
+                key = [
+                    candidate.trackName ?? "",
+                    candidate.artistName ?? "",
+                    candidate.albumName ?? "",
+                    String(candidate.duration ?? -1)
+                ]
+                .joined(separator: "|")
+            }
+
+            if seen.insert(key).inserted {
+                result.append(candidate)
+            }
+        }
+
+        return result
     }
 
     // MARK: - Requests
