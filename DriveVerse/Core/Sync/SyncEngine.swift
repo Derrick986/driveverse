@@ -18,7 +18,7 @@ struct LyricsPosition: Equatable {
 /// The clock is injected so every code path is unit-testable.
 final class SyncEngine {
     static let seekThresholdMs = 2000
-    static let tickInterval: TimeInterval = 0.25
+    static let tickInterval: TimeInterval = 0.2
 
     var now: () -> Date
     private(set) var anchor: NowPlayingState?
@@ -49,8 +49,16 @@ final class SyncEngine {
            current.isPlaying == new.isPlaying,
            new.isPlaying {
             let expected = Self.extrapolatedPositionMs(anchor: current, at: new.capturedAt)
-            if abs(expected - new.positionMs) <= Self.seekThresholdMs {
-                return // within jitter tolerance — keep the smoother existing anchor
+            let thresholdMs: Int
+
+            if new.source == .appleMusic {
+                thresholdMs = 250
+            } else {
+                thresholdMs = Self.seekThresholdMs
+            }
+
+            if abs(expected - new.positionMs) <= thresholdMs {
+                return
             }
         }
         anchor = new // new track, play/pause flip, or a real seek: snap

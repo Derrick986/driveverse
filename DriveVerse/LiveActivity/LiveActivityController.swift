@@ -20,7 +20,7 @@ final class LiveActivityController {
     /// Rapid line changes are coalesced (never dropped) to one update per
     /// this interval; the newest line always lands, at worst this late.
     /// Track changes and play/pause flips always send immediately.
-    static let minLineUpdateInterval: TimeInterval = 0.5
+    static let minLineUpdateInterval: TimeInterval = 0.2
 
     private static let log = Logger(subsystem: "com.praveetgupta.driveverse", category: "activity")
 
