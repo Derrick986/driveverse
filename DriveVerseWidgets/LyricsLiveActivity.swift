@@ -83,72 +83,80 @@ struct LockScreenLyricsView: View {
     /// an observer app can't seek, so it would never be interactive and
     /// only steals space from the lyric.
     private var smallBody: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 9) {
 
-            // Small song header
-            HStack(spacing: 5) {
-                Image(systemName: context.state.isPlaying
-                      ? "music.note"
-                      : "pause.fill")
-                    .font(.caption2.weight(.semibold))
-
-                Text(context.state.title)
-                    .font(.caption2.weight(.semibold))
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(.white.opacity(0.65))
-
-            // Current lyric — main focus
-            Text(
-                context.state.currentLine.isEmpty
-                ? "♪"
-                : context.state.currentLine
-            )
-            .font(
-                .system(
-                    size: 18,
-                    weight: .bold,
-                    design: .rounded
+            // Current lyric
+            ZStack(alignment: .topLeading) {
+                Text(
+                    context.state.currentLine.isEmpty
+                    ? "♪"
+                    : context.state.currentLine
                 )
-            )
-            .foregroundStyle(.white)
-            .lineLimit(2)
-            .minimumScaleFactor(0.72)
-            .multilineTextAlignment(.leading)
+                .font(
+                    .system(
+                        size: 19,
+                        weight: .bold,
+                        design: .rounded
+                    )
+                )
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.70)
+                .multilineTextAlignment(.leading)
+                .frame(
+                    maxWidth: .infinity,
+                    alignment: .leading
+                )
+                .id(context.state.currentLine)
+                .transition(
+                    .asymmetric(
+                        insertion:
+                            .opacity
+                            .combined(
+                                with: .offset(y: 6)
+                            ),
+
+                        removal:
+                            .opacity
+                            .combined(
+                                with: .offset(y: -6)
+                            )
+                    )
+                )
+            }
             .frame(
                 maxWidth: .infinity,
-                alignment: .leading
+                minHeight: 40,
+                alignment: .topLeading
             )
-            .layoutPriority(1)
+            .clipped()
+            .animation(
+                .easeOut(duration: 0.24),
+                value: context.state.currentLine
+            )
 
             // Next lyric
             if !context.state.nextLine.isEmpty {
-                HStack(
-                    alignment: .firstTextBaseline,
-                    spacing: 5
-                ) {
-                    Capsule()
-                        .fill(Color.white.opacity(0.30))
-                        .frame(width: 3, height: 12)
-
-                    Text(context.state.nextLine)
-                        .font(
-                            .system(
-                                size: 12,
-                                weight: .medium,
-                                design: .rounded
-                            )
+                Text(context.state.nextLine)
+                    .font(
+                        .system(
+                            size: 13,
+                            weight: .medium,
+                            design: .rounded
                         )
-                        .foregroundStyle(.white.opacity(0.55))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.80)
-                        .frame(
-                            maxWidth: .infinity,
-                            alignment: .leading
-                        )
-                }
+                    )
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .frame(
+                        maxWidth: .infinity,
+                        alignment: .leading
+                    )
+                    .contentTransition(.opacity)
+                    .animation(
+                        .easeInOut(duration: 0.18),
+                        value: context.state.nextLine
+                    )
             }
         }
         .padding(.horizontal, 11)
