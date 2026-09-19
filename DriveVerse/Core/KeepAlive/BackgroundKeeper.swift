@@ -8,24 +8,24 @@ enum KeepAliveError: Error {
     case locationDenied
 }
 
-/// Keeps the app alive in the background during Drive Mode via a low-power
-/// background location session.
+/// Keeps DriveVerse actively executing while Drive Mode is enabled.
 ///
-/// Location, NOT silent audio, on purpose: iOS explicitly forbids Live
-/// Activity updates from processes whose only background reason is playing
-/// media ("Process is only playing background media so is forbidden to
-/// update activity" — liveactivitiesd). A location session grants normal
-/// background execution AND update permission, which is how navigation apps
-/// update their Live Activities. Accuracy is deliberately coarse — the fix
-/// keeps the process alive; the positions are irrelevant and never stored.
-///
-/// ⚠️ App Store note (CLAUDE.md §6): using location purely as a keep-alive
-/// would be rejected in App Review. Fine for a personally sideloaded build;
-/// a store build would need push-updated activities instead.
+/// We use Core Location because Drive Mode genuinely needs timely background
+/// execution for its Live Activity. Location values themselves are discarded.
 final class BackgroundKeeper: NSObject, CLLocationManagerDelegate {
-    private static let log = Logger(subsystem: "com.praveetgupta.driveverse", category: "keepalive")
+
+    private static let log = Logger(
+        subsystem: "com.derrick986.driveverse2",
+        category: "keepalive"
+    )
 
     private let manager = CLLocationManager()
+
+    /// Explicit iOS background activity session.
+    /// Keeping a strong reference is important — invalidating or releasing it
+    /// ends the background activity session.
+    private var backgroundSession: CLBackgroundActivitySession?
+
     private var wantsRunning = false
     private(set) var isRunning = false
 
@@ -34,47 +34,92 @@ final class BackgroundKeeper: NSObject, CLLocationManagerDelegate {
 
     override init() {
         super.init()
+
         manager.delegate = self
-        // Cheapest possible session: cell-tower accuracy, no GPS spin-up.
-        // The session's existence is what keeps the app alive — the fixes
-        // themselves are discarded, so precision buys nothing but battery.
-        manager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
-        manager.distanceFilter = 1_000
+
+        // We don't need GPS-level precision, but 3 km + 1000 m filtering was
+        // too aggressive and could leave the process without timely location
+        // activity for many seconds while driving.
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+
+        // At driving speed this produces much more regular Core Location
+        // activity without requesting every tiny GPS movement.
+        manager.distanceFilter = 25
+
+        // Drive Mode must not allow Core Location to automatically pause.
         manager.pausesLocationUpdatesAutomatically = false
+
+        // Tell Core Location that this session represents vehicle travel.
         manager.activityType = .automotiveNavigation
     }
 
     func start() throws {
-        guard !isRunning else { return }
+        guard !isRunning else {
+            return
+        }
+
         wantsRunning = true
+
         switch manager.authorizationStatus {
+
         case .notDetermined:
-            // activate() follows from the delegate callback once granted.
             manager.requestWhenInUseAuthorization()
+
         case .denied, .restricted:
             wantsRunning = false
             throw KeepAliveError.locationDenied
-        default:
+
+        case .authorizedWhenInUse,
+             .authorizedAlways:
+
+            activate()
+
+        @unknown default:
             activate()
         }
     }
 
     func stop() {
         wantsRunning = false
-        guard isRunning else { return }
-        isRunning = false
+
+        guard isRunning || backgroundSession != nil else {
+            return
+        }
+
+        Self.log.info("Stopping Drive Mode background session")
+
         manager.stopUpdatingLocation()
         manager.allowsBackgroundLocationUpdates = false
+
+        backgroundSession?.invalidate()
+        backgroundSession = nil
+
+        isRunning = false
     }
 
     private func activate() {
-        guard wantsRunning, !isRunning else { return }
+        guard wantsRunning, !isRunning else {
+            return
+        }
+
+        Self.log.info("Starting Drive Mode background session")
+
+        // Explicitly tell iOS that DriveVerse needs timely Core Location
+        // activity while backgrounded.
+        if backgroundSession == nil {
+            backgroundSession = CLBackgroundActivitySession()
+        }
+
         manager.allowsBackgroundLocationUpdates = true
+        manager.pausesLocationUpdatesAutomatically = false
+        manager.activityType = .automotiveNavigation
+
         manager.startUpdatingLocation()
+
         isRunning = true
-        // "Always" lets the CarPlay automation start Drive Mode with the app
-        // launched straight into the background; When-In-Use is enough for
-        // sessions begun in the foreground.
+
+        // Always authorization makes CarPlay-triggered Drive Mode more
+        // reliable when the app starts from the background.
         if manager.authorizationStatus == .authorizedWhenInUse {
             manager.requestAlwaysAuthorization()
         }
@@ -82,26 +127,66 @@ final class BackgroundKeeper: NSObject, CLLocationManagerDelegate {
 
     // MARK: - CLLocationManagerDelegate
 
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        guard wantsRunning else { return }
+    func locationManagerDidChangeAuthorization(
+        _ manager: CLLocationManager
+    ) {
+        guard wantsRunning else {
+            return
+        }
+
         switch manager.authorizationStatus {
-        case .authorizedWhenInUse, .authorizedAlways:
+
+        case .authorizedWhenInUse,
+             .authorizedAlways:
+
             activate()
-        case .denied, .restricted:
+
+        case .denied,
+             .restricted:
+
             wantsRunning = false
-            onIssue?("Drive Mode needs location access to stay alive in the background. Allow it for DriveVerse in Settings → Privacy → Location Services.")
+
+            backgroundSession?.invalidate()
+            backgroundSession = nil
+
+            isRunning = false
+
+            onIssue?(
+                """
+                Drive Mode needs location access to keep lyrics updating \
+                while the phone is locked. Allow location access for \
+                DriveVerse in Settings → Privacy & Security → \
+                Location Services.
+                """
+            )
+
         default:
             break
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        Self.log.warning("location error: \(error.localizedDescription, privacy: .public)")
+    func locationManager(
+        _ manager: CLLocationManager,
+        didFailWithError error: Error
+    ) {
+        Self.log.warning(
+            "Location error: \(error.localizedDescription, privacy: .public)"
+        )
     }
 
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        // Positions are irrelevant and discarded — the session's existence is
-        // the feature.
+    func locationManager(
+        _ manager: CLLocationManager,
+        didUpdateLocations locations: [CLLocation]
+    ) {
+        // Intentionally discard location information.
+        //
+        // Receiving these callbacks keeps the background location session
+        // active. DriveVerse does not store or use the user's position.
+    }
+
+    deinit {
+        manager.stopUpdatingLocation()
+        backgroundSession?.invalidate()
     }
 }
 #endif
