@@ -10,6 +10,7 @@ struct StartDriveModeIntent: LiveActivityIntent {
     static let description = IntentDescription(
         "Turns on Drive Mode and starts the lyrics Live Activity for whatever plays next."
     )
+    static let supportedModes: IntentModes = [.background]
 
     func perform() async throws -> some IntentResult {
         let model = await AppModel.shared
@@ -26,6 +27,7 @@ struct StopDriveModeIntent: LiveActivityIntent {
     static let description = IntentDescription(
         "Turns off Drive Mode and ends the lyrics Live Activity."
     )
+    static let supportedModes: IntentModes = [.background]
 
     func perform() async throws -> some IntentResult {
         let model = await AppModel.shared

@@ -44,7 +44,7 @@ final class BackgroundKeeper: NSObject, CLLocationManagerDelegate {
 
         // At driving speed this produces much more regular Core Location
         // activity without requesting every tiny GPS movement.
-        manager.distanceFilter = 25
+        manager.distanceFilter = kCLDistanceFilterNone
 
         // Drive Mode must not allow Core Location to automatically pause.
         manager.pausesLocationUpdatesAutomatically = false

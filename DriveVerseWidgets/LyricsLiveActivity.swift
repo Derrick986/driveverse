@@ -83,84 +83,84 @@ struct LockScreenLyricsView: View {
     /// an observer app can't seek, so it would never be interactive and
     /// only steals space from the lyric.
     private var smallBody: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        ViewThatFits(in: .vertical) {
 
-            // Current lyric
-            ZStack(alignment: .topLeading) {
-                Text(
-                    context.state.currentLine.isEmpty
-                    ? "♪"
-                    : context.state.currentLine
-                )
-                .font(
-                    .system(
-                        size: 19,
-                        weight: .bold,
-                        design: .rounded
-                    )
-                )
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.70)
-                .multilineTextAlignment(.leading)
-                .frame(
-                    maxWidth: .infinity,
-                    alignment: .leading
-                )
-                .id(context.state.currentLine)
-                .transition(
-                    .asymmetric(
-                        insertion:
-                            .opacity
-                            .combined(
-                                with: .offset(y: 6)
-                            ),
+            // Normal CarPlay layout
+            VStack(alignment: .leading, spacing: 4) {
+                animatedCurrentLyric
 
-                        removal:
-                            .opacity
-                            .combined(
-                                with: .offset(y: -6)
+                if !context.state.nextLine.isEmpty {
+                    Text(context.state.nextLine)
+                        .font(
+                            .system(
+                                size: 13,
+                                weight: .medium,
+                                design: .rounded
                             )
-                    )
-                )
-            }
-            .frame(
-                maxWidth: .infinity,
-                minHeight: 40,
-                alignment: .topLeading
-            )
-            .clipped()
-            .animation(
-                .easeOut(duration: 0.24),
-                value: context.state.currentLine
-            )
-
-            // Next lyric
-            if !context.state.nextLine.isEmpty {
-                Text(context.state.nextLine)
-                    .font(
-                        .system(
-                            size: 13,
-                            weight: .medium,
-                            design: .rounded
                         )
-                    )
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .frame(
-                        maxWidth: .infinity,
-                        alignment: .leading
-                    )
-                    .contentTransition(.opacity)
-                    .animation(
-                        .easeInOut(duration: 0.18),
-                        value: context.state.nextLine
-                    )
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
+                        .contentTransition(.opacity)
+                        .animation(
+                            .easeInOut(duration: 0.16),
+                            value: context.state.nextLine
+                        )
+                }
+            }
+
+            // Waze temporarily squeezes the Dashboard:
+            // prioritise the current lyric instead of crushing both lines.
+            VStack(alignment: .leading, spacing: 0) {
+                animatedCurrentLyric
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+    }
+
+    private var animatedCurrentLyric: some View {
+        ZStack(alignment: .topLeading) {
+            Text(
+                context.state.currentLine.isEmpty
+                ? "♪"
+                : context.state.currentLine
+            )
+            .font(
+                .system(
+                    size: 19,
+                    weight: .bold,
+                    design: .rounded
+                )
+            )
+            .foregroundStyle(.primary)
+            .lineLimit(2)
+            .minimumScaleFactor(0.70)
+            .multilineTextAlignment(.leading)
+            .frame(
+                maxWidth: .infinity,
+                alignment: .leading
+            )
+            .id(context.state.currentLine)
+            .transition(
+                .asymmetric(
+                    insertion:
+                        .opacity
+                        .combined(with: .offset(y: 10)),
+                    removal:
+                        .opacity
+                        .combined(with: .offset(y: -10))
+                )
+            )
+        }
+        .animation(
+            .easeOut(duration: 0.26),
+            value: context.state.currentLine
+        )
     }
 
     private var mediumBody: some View {
