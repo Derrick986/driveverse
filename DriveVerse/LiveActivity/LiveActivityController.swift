@@ -6,66 +6,123 @@ import os
 
 /// Owns the lyrics Live Activity lifecycle.
 ///
-/// One activity spans the whole listening session: iOS refuses
-/// Activity.request from a backgrounded app, so the original
-/// end-and-restart-per-track design lost the tile on every backgrounded song
-/// change. Track changes are now plain updates (allowed from the background);
-/// the activity ends only after playback has stopped for the grace period.
-/// Lyric-less tracks keep the tile alive showing "♪ title" so a later track
-/// with lyrics doesn't need a (background-impossible) fresh start.
-/// On iOS 26 the lock-screen presentation is mirrored onto CarPlay for free.
+/// Important update rule:
+///
+/// Only ONE ActivityKit update is allowed to be in flight at a time.
+///
+/// If several lyric states arrive while an update is still being processed,
+/// older pending states are discarded and only the newest state is sent.
+///
+/// This is ideal for synchronized lyrics:
+/// once line 24 is current, there is no reason to send an obsolete line 23
+/// just because it was queued earlier.
 @MainActor
 final class LiveActivityController {
+
     static let endDelay: TimeInterval = 30
-    /// Rapid line changes are coalesced (never dropped) to one update per
-    /// this interval; the newest line always lands, at worst this late.
-    /// Track changes and play/pause flips always send immediately.
-    static let minLineUpdateInterval: TimeInterval = 0.0
 
-    private static let log = Logger(subsystem: "com.praveetgupta.driveverse", category: "activity")
+    private static let log =
+        Logger(
+            subsystem: "com.praveetgupta.driveverse",
+            category: "activity"
+        )
 
-    private var activity: Activity<LyricsAttributes>?
-    private var policy = LiveActivityUpdatePolicy()
-    private var throttle = LiveActivityUpdateThrottle(minInterval: LiveActivityController.minLineUpdateInterval)
-    private var endTask: Task<Void, Never>?
-    private var stateWatcher: Task<Void, Never>?
-    private var pendingTask: Task<Void, Never>?
-    private var pendingContent: LyricsAttributes.ContentState?
-    private var lastSentTrackKey: String?
-    private var lastSentIsPlaying: Bool?
+    private var activity:
+        Activity<LyricsAttributes>?
 
-    /// Drive Mode's keep-alive only runs while an activity is actually up.
-    var isActive: Bool { activity != nil }
+    private var policy =
+        LiveActivityUpdatePolicy()
 
-    /// While Drive Mode is on the session must survive arbitrary pauses:
-    /// hold the activity (pause glyph) instead of ending it after the grace
-    /// period, because a fresh start would need the foreground.
+    private var endTask:
+        Task<Void, Never>?
+
+    private var stateWatcher:
+        Task<Void, Never>?
+
+    // MARK: - Serialized ActivityKit updater
+
+    private struct PendingUpdate {
+        let activity:
+            Activity<LyricsAttributes>
+
+        let content:
+            LyricsAttributes.ContentState
+
+        let timestamp:
+            Date
+    }
+
+    /// At most one unsent state.
+    /// A newer state simply replaces the older one.
+    private var pendingUpdate:
+        PendingUpdate?
+
+    /// There is never more than one update worker.
+    private var updateWorker:
+        Task<Void, Never>?
+
+    private var lastSentTrackKey:
+        String?
+
+    private var lastSentIsPlaying:
+        Bool?
+
+    /// Drive Mode's keep-alive only runs while an activity actually exists.
+    var isActive: Bool {
+        activity != nil
+    }
+
+    /// While Drive Mode is enabled, don't destroy the activity just because
+    /// playback is temporarily paused.
     var holdWhilePaused = false
 
     init() {
-        // Clean up activities orphaned by a previous app termination.
+
+        // Clean up orphaned activities from a previous app termination.
         Task {
-            for stale in Activity<LyricsAttributes>.activities {
-                await stale.end(nil, dismissalPolicy: .immediate)
+
+            for stale in
+                Activity<LyricsAttributes>.activities {
+
+                await stale.end(
+                    nil,
+                    dismissalPolicy: .immediate
+                )
             }
         }
     }
 
-    /// Single entry point, called from AppModel on every state/position change.
-    func sync(state: NowPlayingState?, position: LyricsPosition?, hasSyncedLyrics: Bool) {
+    // MARK: - Sync
+
+    /// Called by AppModel whenever the playback/lyric position changes.
+    func sync(
+        state: NowPlayingState?,
+        position: LyricsPosition?,
+        hasSyncedLyrics: Bool
+    ) {
+
         guard let state else {
-            if holdWhilePaused { cancelScheduledEnd() } else { scheduleEnd() }
+
+            if holdWhilePaused {
+                cancelScheduledEnd()
+            } else {
+                scheduleEnd()
+            }
+
             return
         }
 
         guard let activity else {
-            // First start needs a playing track with synced lyrics and a
-            // foregrounded app — the request throws in the background and is
-            // simply retried on a later sync (heals on foreground resync).
-            // The Start Drive Mode intent bypasses this via beginSession.
-            if state.isPlaying, hasSyncedLyrics {
-                beginSession(state: state, position: position)
+
+            if state.isPlaying,
+               hasSyncedLyrics {
+
+                beginSession(
+                    state: state,
+                    position: position
+                )
             }
+
             return
         }
 
@@ -75,90 +132,211 @@ final class LiveActivityController {
             scheduleEnd()
         }
 
-        let key = Self.key(for: state)
+        let key =
+            Self.key(for: state)
+
+        // The policy remains responsible for making sure ordinary progress
+        // ticks don't become ActivityKit updates.
+        //
+        // Normally an update is produced only when:
+        // - lyric line changes
+        // - track changes
+        // - play/pause changes
         guard policy.shouldUpdate(
             trackKey: key,
             lineIndex: position?.lineIndex,
             isPlaying: state.isPlaying
-        ) else { return }
-
-        let critical = key != lastSentTrackKey || state.isPlaying != lastSentIsPlaying
-        lastSentTrackKey = key
-        lastSentIsPlaying = state.isPlaying
-        let content = Self.content(state: state, position: position)
-
-        switch throttle.decide(critical: critical, now: Date()) {
-        case .sendNow:
-            cancelPendingUpdate() // superseded by newer content
-            Task {
-                await activity.update(ActivityContent(state: content, staleDate: nil))
-            }
-        case .coalesce(let fireIn):
-            pendingContent = content
-            armPendingUpdate(after: fireIn, on: activity)
-        }
-    }
-
-    /// Trailing edge of the throttle: deliver the newest coalesced content
-    /// once the spacing interval elapses, so no line change is ever lost.
-    private func armPendingUpdate(after delay: TimeInterval, on activity: Activity<LyricsAttributes>) {
-        guard pendingTask == nil else { return } // armed — content already replaced
-        pendingTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled, let self, let content = self.pendingContent else { return }
-            self.pendingContent = nil
-            self.pendingTask = nil
-            self.throttle.noteSent(now: Date())
-            await activity.update(ActivityContent(state: content, staleDate: nil))
-        }
-    }
-
-    private func cancelPendingUpdate() {
-        pendingTask?.cancel()
-        pendingTask = nil
-        pendingContent = nil
-    }
-
-    /// Requests the session's activity. Reached two ways: from sync() once a
-    /// lyric-bearing track plays in the foreground, or from the Start Drive
-    /// Mode intent — the one background context iOS grants Activity.request
-    /// to. The intent path may run before any music plays; the placeholder
-    /// content matters because a background app can only *update* from then on.
-    func beginSession(state: NowPlayingState?, position: LyricsPosition?) {
-        guard activity == nil,
-              ActivityAuthorizationInfo().areActivitiesEnabled else {
+        ) else {
             return
         }
 
-        let content = state.map { Self.content(state: $0, position: position) }
-            ?? LyricsAttributes.ContentState(
-                title: "DriveVerse", artist: "", sourceName: "",
-                currentLine: "♪ Waiting for music…", nextLine: "",
-                progress: 0, isPlaying: false
+        lastSentTrackKey = key
+        lastSentIsPlaying = state.isPlaying
+
+        let content =
+            Self.content(
+                state: state,
+                position: position
             )
+
+        enqueueLatest(
+            content,
+            on: activity
+        )
+    }
+
+    // MARK: - Latest-state-wins queue
+
+    /// Replaces any unsent old lyric with the newest state.
+    private func enqueueLatest(
+        _ content: LyricsAttributes.ContentState,
+        on activity: Activity<LyricsAttributes>
+    ) {
+
+        pendingUpdate =
+            PendingUpdate(
+                activity: activity,
+                content: content,
+                timestamp: Date()
+            )
+
+        startUpdateWorkerIfNeeded()
+    }
+
+    private func startUpdateWorkerIfNeeded() {
+
+        guard updateWorker == nil else {
+            return
+        }
+
+        updateWorker =
+            Task { [weak self] in
+
+                guard let self else {
+                    return
+                }
+
+                while !Task.isCancelled {
+
+                    guard let update =
+                        self.pendingUpdate else {
+                        break
+                    }
+
+                    // Take the newest state.
+                    self.pendingUpdate = nil
+
+                    // iOS 26 provides the timestamp-aware local ActivityKit
+                    // update API. If an older update somehow arrives after a
+                    // newer one, the system can reject the stale update.
+                    if #available(iOS 26.0, *) {
+
+                        await update.activity.update(
+                            ActivityContent(
+                                state: update.content,
+                                staleDate: nil
+                            ),
+                            alertConfiguration: nil,
+                            timestamp: update.timestamp
+                        )
+
+                    } else {
+
+                        await update.activity.update(
+                            ActivityContent(
+                                state: update.content,
+                                staleDate: nil
+                            )
+                        )
+                    }
+
+                    // While the await above was running, sync() may have
+                    // replaced pendingUpdate several times.
+                    //
+                    // The loop therefore sends only the newest pending state.
+                }
+
+                self.updateWorker = nil
+
+                // Safety check in case new state arrived as the worker was
+                // finishing.
+                if self.pendingUpdate != nil {
+                    self.startUpdateWorkerIfNeeded()
+                }
+            }
+    }
+
+    private func cancelUpdateWorker() {
+
+        updateWorker?.cancel()
+        updateWorker = nil
+
+        pendingUpdate = nil
+    }
+
+    // MARK: - Start session
+
+    /// Requests the listening session's Live Activity.
+    ///
+    /// Normal background code cannot reliably create a fresh Activity.
+    /// Start Drive Mode's LiveActivityIntent is the supported background
+    /// entry point.
+    func beginSession(
+        state: NowPlayingState?,
+        position: LyricsPosition?
+    ) {
+
+        guard activity == nil,
+              ActivityAuthorizationInfo()
+                .areActivitiesEnabled else {
+            return
+        }
+
+        let content =
+            state.map {
+
+                Self.content(
+                    state: $0,
+                    position: position
+                )
+
+            } ?? LyricsAttributes.ContentState(
+                title: "DriveVerse",
+                artist: "",
+                sourceName: "",
+                currentLine:
+                    "♪ Waiting for music…",
+                nextLine: "",
+                progress: 0,
+                isPlaying: false
+            )
+
         do {
-            let requested = try Activity.request(
-                attributes: LyricsAttributes(),
-                content: ActivityContent(state: content, staleDate: nil)
-            )
+
+            let requested =
+                try Activity.request(
+                    attributes:
+                        LyricsAttributes(),
+                    content:
+                        ActivityContent(
+                            state: content,
+                            staleDate: nil
+                        )
+                )
+
             activity = requested
 
             watch(requested)
-            throttle.noteSent(now: Date())
+
             if let state {
-                lastSentTrackKey = Self.key(for: state)
-                lastSentIsPlaying = state.isPlaying
+
+                let trackKey =
+                    Self.key(for: state)
+
+                lastSentTrackKey =
+                    trackKey
+
+                lastSentIsPlaying =
+                    state.isPlaying
+
                 policy.seed(
-                    trackKey: Self.key(for: state),
-                    lineIndex: position?.lineIndex,
-                    isPlaying: state.isPlaying
+                    trackKey: trackKey,
+                    lineIndex:
+                        position?.lineIndex,
+                    isPlaying:
+                        state.isPlaying
                 )
+
             } else {
+
                 lastSentTrackKey = nil
                 lastSentIsPlaying = nil
+
                 policy.reset()
             }
+
         } catch {
+
             Self.log.error(
                 "Activity.request failed: \(error.localizedDescription, privacy: .public)"
             )
@@ -167,65 +345,132 @@ final class LiveActivityController {
         }
     }
 
-    /// The system can end or dismiss the activity without asking us (user
-    /// swipe, system policy). Without this watcher we'd keep "updating" a
-    /// corpse while believing everything is fine.
-    private func watch(_ requested: Activity<LyricsAttributes>) {
+    // MARK: - Activity state watcher
+
+    /// iOS can end or dismiss a Live Activity independently of DriveVerse.
+    private func watch(
+        _ requested:
+            Activity<LyricsAttributes>
+    ) {
+
         stateWatcher?.cancel()
-        stateWatcher = Task { [weak self] in
-            for await state in requested.activityStateUpdates {
-                guard let self, state == .ended || state == .dismissed else { continue }
-                if self.activity?.id == requested.id {
-                    self.activity = nil
-                    self.policy.reset()
-                    self.cancelPendingUpdate()
-                    Self.log.warning("activity ended outside the app — background restart impossible; reopen the app or rerun the CarPlay automation")
+
+        stateWatcher =
+            Task { [weak self] in
+
+                for await state in
+                    requested.activityStateUpdates {
+
+                    guard let self,
+                          state == .ended
+                            || state == .dismissed else {
+                        continue
+                    }
+
+                    if self.activity?.id
+                        == requested.id {
+
+                        self.activity = nil
+
+                        self.policy.reset()
+
+                        self.cancelUpdateWorker()
+
+                        Self.log.warning(
+                            "activity ended outside the app — background restart impossible; reopen the app or rerun the CarPlay automation"
+                        )
+                    }
                 }
             }
-        }
     }
+
+    // MARK: - End
 
     func endNow() async {
+
         endTask?.cancel()
         endTask = nil
+
         stateWatcher?.cancel()
         stateWatcher = nil
-        cancelPendingUpdate()
-        guard let activity else { return }
+
+        cancelUpdateWorker()
+
+        guard let activity else {
+            return
+        }
+
         self.activity = nil
+
         policy.reset()
-        await activity.end(nil, dismissalPolicy: .immediate)
+
+        await activity.end(
+            nil,
+            dismissalPolicy: .immediate
+        )
     }
 
-    // MARK: - Internals
-
     private func scheduleEnd() {
-        guard endTask == nil, activity != nil else { return }
-        endTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.endDelay))
-            guard !Task.isCancelled else { return }
-            await self?.endNow()
+
+        guard endTask == nil,
+              activity != nil else {
+            return
         }
+
+        endTask =
+            Task { [weak self] in
+
+                try? await Task.sleep(
+                    for:
+                        .seconds(
+                            Self.endDelay
+                        )
+                )
+
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                await self?.endNow()
+            }
     }
 
     private func cancelScheduledEnd() {
+
         endTask?.cancel()
         endTask = nil
     }
 
-    private static func key(for state: NowPlayingState) -> String {
+    // MARK: - Content
+
+    private static func key(
+        for state: NowPlayingState
+    ) -> String {
+
         "\(state.title)|\(state.artist)|\(state.source.rawValue)"
     }
 
-    private static func content(state: NowPlayingState, position: LyricsPosition?) -> LyricsAttributes.ContentState {
+    private static func content(
+        state: NowPlayingState,
+        position: LyricsPosition?
+    ) -> LyricsAttributes.ContentState {
+
         LyricsAttributes.ContentState(
             title: state.title,
             artist: state.artist,
-            sourceName: state.source.displayName,
-            currentLine: position?.currentLine ?? "♪ \(state.title)",
-            nextLine: position?.nextLine ?? "",
-            progress: position?.trackProgress ?? 0,
-            isPlaying: state.isPlaying
+            sourceName:
+                state.source.displayName,
+            currentLine:
+                position?.currentLine
+                ?? "♪ \(state.title)",
+            nextLine:
+                position?.nextLine
+                ?? "",
+            progress:
+                position?.trackProgress
+                ?? 0,
+            isPlaying:
+                state.isPlaying
         )
     }
 }
