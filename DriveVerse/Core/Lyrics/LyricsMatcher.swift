@@ -31,8 +31,9 @@ enum LyricsMatcher {
         artist: String,
         durationMs: Int?
     ) -> String {
+
         let bucket = durationMs.map {
-            Int((Double($0) / 5000.0).rounded())
+            Int((Double($0) / 500.0).rounded())
         } ?? -1
 
         return "\(normalizeTitle(title))|\(normalizeArtist(artist))|\(bucket)"
@@ -82,7 +83,7 @@ enum LyricsMatcher {
                 let difference =
                     abs(candidateDuration * 1000 - Double(durationMs))
 
-                guard difference <= 7000 else {
+                guard difference <= 3500 else {
                     return false
                 }
             }
@@ -170,13 +171,15 @@ enum LyricsMatcher {
             )
 
             if candidateAlbum == wantedAlbum {
-                score += 150
+                score += 80
             } else if !candidateAlbum.isEmpty {
-                score -= 30
+                score -= 20
             }
         }
 
-        // Duration.
+        // Duration is extremely important for synchronized lyrics.
+        // A different master / edit / remix can have identical metadata but
+        // noticeably different lyric timing.
         if let durationMs,
            let candidateDuration = candidate.duration {
 
@@ -184,23 +187,33 @@ enum LyricsMatcher {
                 abs(candidateDuration * 1000 - Double(durationMs))
 
             switch difference {
+
+            case ...100:
+                score += 900
+
             case ...250:
-                score += 300
+                score += 800
+
+            case ...500:
+                score += 650
 
             case ...750:
-                score += 260
+                score += 500
+
+            case ...1000:
+                score += 350
 
             case ...1500:
-                score += 210
+                score += 200
 
-            case ...3000:
-                score += 140
+            case ...2500:
+                score += 50
 
-            case ...5000:
-                score += 60
+            case ...3500:
+                score -= 150
 
             default:
-                score -= 100
+                score -= 500
             }
         }
 

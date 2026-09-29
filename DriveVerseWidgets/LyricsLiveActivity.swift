@@ -150,15 +150,15 @@ struct LockScreenLyricsView: View {
                 .asymmetric(
                     insertion:
                         .opacity
-                        .combined(with: .offset(y: 10)),
+                        .combined(with: .offset(y: 7)),
                     removal:
                         .opacity
-                        .combined(with: .offset(y: -10))
+                        .combined(with: .offset(y: -7))
                 )
             )
         }
         .animation(
-            .easeOut(duration: 0.26),
+            .easeOut(duration: 0.16),
             value: context.state.currentLine
         )
     }

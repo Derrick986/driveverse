@@ -116,6 +116,25 @@ struct LRCLIBClient {
             album: album,
             durationMs: durationMs
         ) {
+            #if DEBUG
+            if let durationMs,
+               let candidateDuration = best.duration {
+
+                let difference =
+                    candidateDuration * 1000 - Double(durationMs)
+
+                print("""
+                [LRCLIB]
+                Selected ID: \(best.id.map(String.init) ?? "nil")
+                Track: \(best.trackName ?? "")
+                Artist: \(best.artistName ?? "")
+                Album: \(best.albumName ?? "")
+                Apple duration: \(durationMs) ms
+                LRCLIB duration: \(Int(candidateDuration * 1000)) ms
+                Difference: \(Int(difference)) ms
+                """)
+            }
+            #endif
             return Self.result(from: best)
         }
 

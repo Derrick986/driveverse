@@ -69,9 +69,30 @@ final class SyncEngine {
 
         guard let new = state else {
             anchor = nil
+
+            // Never keep lyrics from the previous track.
+            lines = []
+
             cancelLineTransition()
             positionSubject.send(nil)
             return
+        }
+
+        let trackChanged: Bool
+
+        if let current = anchor {
+            trackChanged = !current.isSameTrack(as: new)
+        } else {
+            trackChanged = false
+        }
+
+        // IMPORTANT:
+        // The new song may be detected before its LRCLIB request finishes.
+        // Remove the previous song's lyrics immediately so the Live Activity
+        // shows only the new track title while waiting.
+        if trackChanged {
+            lines = []
+            cancelLineTransition()
         }
 
         var anchorChanged = true
@@ -96,7 +117,6 @@ final class SyncEngine {
             }
 
             if abs(expected - new.positionMs) <= thresholdMs {
-                // Existing anchor is still accurate enough.
                 anchorChanged = false
             }
         }
@@ -107,8 +127,6 @@ final class SyncEngine {
 
         tick()
 
-        // Only rebuild the exact lyric timer when the playback clock really
-        // changed, or when no line callback currently exists.
         if anchorChanged || lineWorkItem == nil {
             scheduleNextLineTransition()
         }
