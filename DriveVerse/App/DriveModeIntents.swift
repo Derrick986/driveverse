@@ -36,19 +36,83 @@ struct StopDriveModeIntent: LiveActivityIntent {
     }
 }
 
-struct DriveVerseShortcuts: AppShortcutsProvider {
-    static var appShortcuts: [AppShortcut] {
-        AppShortcut(
-            intent: StartDriveModeIntent(),
-            phrases: ["Start \(.applicationName) Drive Mode"],
-            shortTitle: "Start Drive Mode",
-            systemImageName: "car.fill"
+struct RefreshCarPlayLyricsIntent:
+    LiveActivityIntent {
+
+    static let title:
+        LocalizedStringResource =
+        "Refresh CarPlay Lyrics"
+
+    static let description =
+        IntentDescription(
+            "Recreates the lyrics Live Activity when CarPlay stops refreshing."
         )
+
+    static let supportedModes:
+        IntentModes =
+        [.background]
+
+    func perform()
+        async throws
+        -> some IntentResult {
+
+        let model =
+            await AppModel.shared
+
+        _ =
+            await model
+                .refreshCarPlayLyrics()
+
+        // Keep the LiveActivityIntent execution grant alive briefly so the
+        // new Activity has time to register with the system / CarPlay host.
+        try? await Task.sleep(
+            for: .seconds(1)
+        )
+
+        return .result()
+    }
+}
+
+struct DriveVerseShortcuts:
+    AppShortcutsProvider {
+
+    static var appShortcuts:
+        [AppShortcut] {
+
         AppShortcut(
-            intent: StopDriveModeIntent(),
-            phrases: ["Stop \(.applicationName) Drive Mode"],
-            shortTitle: "Stop Drive Mode",
-            systemImageName: "car"
+            intent:
+                StartDriveModeIntent(),
+            phrases: [
+                "Start \(.applicationName) Drive Mode"
+            ],
+            shortTitle:
+                "Start Drive Mode",
+            systemImageName:
+                "car.fill"
+        )
+
+        AppShortcut(
+            intent:
+                StopDriveModeIntent(),
+            phrases: [
+                "Stop \(.applicationName) Drive Mode"
+            ],
+            shortTitle:
+                "Stop Drive Mode",
+            systemImageName:
+                "car"
+        )
+
+        AppShortcut(
+            intent:
+                RefreshCarPlayLyricsIntent(),
+            phrases: [
+                "Refresh \(.applicationName) CarPlay Lyrics"
+            ],
+            shortTitle:
+                "Refresh CarPlay Lyrics",
+            systemImageName:
+                "arrow.clockwise"
         )
     }
 }

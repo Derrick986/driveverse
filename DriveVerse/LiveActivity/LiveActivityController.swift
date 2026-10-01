@@ -345,6 +345,138 @@ final class LiveActivityController {
         }
     }
 
+    /// Rebuilds the Live Activity presentation without killing the existing
+    /// activity first.
+    ///
+    /// This is primarily a recovery mechanism for CarPlay when its hosted
+    /// Live Activity presentation becomes stale.
+    ///
+    /// IMPORTANT:
+    /// The caller must be a LiveActivityIntent or a foreground context because
+    /// Activity.request() isn't normally allowed from an arbitrary background
+    /// process.
+    func recreateSession(
+        state: NowPlayingState?,
+        position: LyricsPosition?
+    ) async -> Bool {
+
+        guard ActivityAuthorizationInfo()
+            .areActivitiesEnabled else {
+
+            Self.log.warning(
+                "Live Activity recreate skipped — activities disabled"
+            )
+
+            return false
+        }
+
+        cancelScheduledEnd()
+
+        let content =
+            state.map {
+
+                Self.content(
+                    state: $0,
+                    position: position
+                )
+
+            } ?? LyricsAttributes.ContentState(
+                title: "DriveVerse",
+                artist: "",
+                sourceName: "",
+                currentLine:
+                    "♪ Waiting for music…",
+                nextLine: "",
+                progress: 0,
+                isPlaying: false
+            )
+
+        do {
+
+            // IMPORTANT:
+            // Create the replacement FIRST.
+            //
+            // If this request fails, the existing activity remains untouched.
+            let replacement =
+                try Activity.request(
+                    attributes:
+                        LyricsAttributes(),
+                    content:
+                        ActivityContent(
+                            state: content,
+                            staleDate: nil
+                        )
+                )
+
+            // Capture all older DriveVerse activities.
+            let oldActivities =
+                Activity<LyricsAttributes>
+                    .activities
+                    .filter {
+                        $0.id != replacement.id
+                    }
+
+            // Switch the controller to the replacement before ending old ones.
+            activity = replacement
+
+            watch(replacement)
+
+            policy.reset()
+
+            if let state {
+
+                let trackKey =
+                    Self.key(for: state)
+
+                lastSentTrackKey =
+                    trackKey
+
+                lastSentIsPlaying =
+                    state.isPlaying
+
+                policy.seed(
+                    trackKey: trackKey,
+                    lineIndex:
+                        position?.lineIndex,
+                    isPlaying:
+                        state.isPlaying
+                )
+
+            } else {
+
+                lastSentTrackKey = nil
+                lastSentIsPlaying = nil
+            }
+
+            // Now that the replacement definitely exists,
+            // remove stale presentations.
+            for old in oldActivities {
+
+                await old.end(
+                    nil,
+                    dismissalPolicy:
+                        .immediate
+                )
+            }
+
+            Self.log.info(
+                "Live Activity recreated successfully"
+            )
+
+            return true
+
+        } catch {
+
+            // The important safety property:
+            // we did NOT destroy the existing activity first.
+            Self.log.error(
+                "Live Activity recreate failed: \(error.localizedDescription, privacy: .public)"
+            )
+
+            return false
+        }
+    }
+
     // MARK: - Activity state watcher
 
     /// iOS can end or dismiss a Live Activity independently of DriveVerse.

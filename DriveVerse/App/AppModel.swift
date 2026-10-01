@@ -81,6 +81,12 @@ final class AppModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var lyricsTask: Task<Void, Never>?
     private var currentSignature: String?
+
+    /// Incremented every time a new lyric request begins.
+    /// Results from older tracks are ignored even if their network request
+    /// happens to finish after a newer track has already started.
+    private var lyricsGeneration = 0
+
     private var started = false
 
     init() {
@@ -166,6 +172,40 @@ final class AppModel: ObservableObject {
 #endif
     }
 
+    /// Recreates the Live Activity while a LiveActivityIntent grant is active.
+    ///
+    /// Used as a recovery action when CarPlay's hosted Live Activity stops
+    /// repainting even though the iPhone Live Activity is still correct.
+    func refreshCarPlayLyrics() async -> Bool {
+
+    #if os(iOS)
+
+        // Make sure the playback pipeline exists even if the system launched
+        // DriveVerse directly into the background for this intent.
+        start()
+
+        // Ask the music sources for the newest playback position first.
+        foregroundResync()
+
+        // Give MediaPlayer / coordinator a brief opportunity to publish the
+        // refreshed state before taking the replacement activity snapshot.
+        try? await Task.sleep(
+            for: .milliseconds(400)
+        )
+
+        return await liveActivity
+            .recreateSession(
+                state: nowPlaying,
+                position: position
+            )
+
+    #else
+
+        return false
+
+    #endif
+    }
+
     // MARK: Actions
 
 #if os(iOS)
@@ -187,10 +227,29 @@ final class AppModel: ObservableObject {
 
     func retryLyrics() {
         guard let state = nowPlaying else { return }
-        currentSignature = LyricsMatcher.signature(
-            title: state.title, artist: state.artist, durationMs: state.durationMs
+
+        let signature = LyricsMatcher.signature(
+            title: state.title,
+            artist: state.artist,
+            durationMs: state.durationMs
         )
-        fetchLyrics(for: state)
+
+        lyricsGeneration &+= 1
+        let generation = lyricsGeneration
+
+        lyricsTask?.cancel()
+        lyricsTask = nil
+
+        currentSignature = signature
+
+        // Never leave previously loaded lyrics visible during a retry.
+        syncEngine.setLyrics([])
+        lyricsState = .loading
+
+        fetchLyrics(
+            for: state,
+            generation: generation
+        )
     }
 
     func clearLyricsCache() {
@@ -229,24 +288,83 @@ final class AppModel: ObservableObject {
     }
 
     private func handle(_ state: NowPlayingState?) {
+
+        let previousState = nowPlaying
+
         nowPlaying = state
-        syncEngine.apply(state)
 
         guard let state else {
-            currentSignature = nil
+
+            lyricsGeneration &+= 1
+
             lyricsTask?.cancel()
-            syncEngine.setLyrics([])
+            lyricsTask = nil
+
+            currentSignature = nil
             lyricsState = .idle
+
+            // Clear old lyrics BEFORE emitting the empty playback state.
+            syncEngine.setLyrics([])
+            syncEngine.apply(nil)
+
+            syncLiveActivity()
             return
         }
 
         let signature = LyricsMatcher.signature(
-            title: state.title, artist: state.artist, durationMs: state.durationMs
+            title: state.title,
+            artist: state.artist,
+            durationMs: state.durationMs
         )
-        if signature != currentSignature {
-            currentSignature = signature
-            fetchLyrics(for: state)
+
+        let actualTrackChanged: Bool
+
+        if let previousState {
+            actualTrackChanged =
+                !previousState.isSameTrack(as: state)
+        } else {
+            actualTrackChanged = true
         }
+
+        let needsNewLyrics =
+            actualTrackChanged ||
+            signature != currentSignature
+
+        if needsNewLyrics {
+
+            lyricsGeneration &+= 1
+            let generation = lyricsGeneration
+
+            lyricsTask?.cancel()
+            lyricsTask = nil
+
+            currentSignature = signature
+
+            // VERY IMPORTANT:
+            //
+            // Clear the previous track's lyrics BEFORE apply(state).
+            //
+            // apply() immediately emits a LyricsPosition. If we wait until
+            // fetchLyrics(), the new song title can temporarily be combined
+            // with the previous song's first lyric.
+            syncEngine.setLyrics([])
+            lyricsState = .loading
+
+            // Only after old lyrics are gone do we let the SyncEngine adopt
+            // the new track.
+            syncEngine.apply(state)
+
+            fetchLyrics(
+                for: state,
+                generation: generation
+            )
+
+        } else {
+
+            // Same track: normal playback position / play-pause update.
+            syncEngine.apply(state)
+        }
+
         syncLiveActivity()
     }
 
@@ -284,40 +402,120 @@ final class AppModel: ObservableObject {
 #endif
     }
 
-    private func fetchLyrics(for state: NowPlayingState) {
-        lyricsTask?.cancel()
-        syncEngine.setLyrics([])
-        lyricsState = .loading
+    private func fetchLyrics(
+        for state: NowPlayingState,
+        generation: Int
+    ) {
 
         lyricsTask = Task { [weak self] in
-            guard let self else { return }
+
+            guard let self else {
+                return
+            }
+
             do {
-                let result = try await self.lyricsService.lyrics(for: state)
-                guard !Task.isCancelled else { return }
-                switch result {
-                case .synced(let raw):
-                    let lines = LRCParser.parse(raw).map {
-                        LRCLine(timeMs: $0.timeMs, text: Transliterator.latinized($0.text))
-                    }
-                    if lines.isEmpty {
-                        self.lyricsState = .notFound
-                    } else {
-                        self.lyricsState = .synced(lines)
-                        self.syncEngine.setLyrics(lines)
-                    }
-                case .plain(let text):
-                    self.lyricsState = .plain(Transliterator.latinized(text))
-                case .instrumental:
-                    self.lyricsState = .instrumental
-                case .notFound:
-                    self.lyricsState = .notFound
+
+                let result =
+                    try await self.lyricsService.lyrics(
+                        for: state
+                    )
+
+                // Two independent protections:
+                //
+                // 1. The Task wasn't cancelled.
+                // 2. This result still belongs to the newest lyric request.
+                guard !Task.isCancelled,
+                      generation == self.lyricsGeneration else {
+                    return
                 }
+
+                switch result {
+
+                case .synced(let raw):
+
+                    let lines =
+                        LRCParser.parse(raw).map {
+
+                            LRCLine(
+                                timeMs: $0.timeMs,
+                                text:
+                                    Transliterator
+                                        .latinized($0.text)
+                            )
+                        }
+
+                    // Check again after parsing in case a track change happened
+                    // while this task was doing work.
+                    guard !Task.isCancelled,
+                          generation == self.lyricsGeneration else {
+                        return
+                    }
+
+                    if lines.isEmpty {
+
+                        self.lyricsState =
+                            .notFound
+
+                        self.syncEngine
+                            .setLyrics([])
+
+                    } else {
+
+                        self.lyricsState =
+                            .synced(lines)
+
+                        self.syncEngine
+                            .setLyrics(lines)
+                    }
+
+                case .plain(let text):
+
+                    self.lyricsState =
+                        .plain(
+                            Transliterator
+                                .latinized(text)
+                        )
+
+                    self.syncEngine
+                        .setLyrics([])
+
+                case .instrumental:
+
+                    self.lyricsState =
+                        .instrumental
+
+                    self.syncEngine
+                        .setLyrics([])
+
+                case .notFound:
+
+                    self.lyricsState =
+                        .notFound
+
+                    self.syncEngine
+                        .setLyrics([])
+                }
+
             } catch is CancellationError {
-                // superseded by a newer track — nothing to do
+
+                // Superseded by a newer track.
+
             } catch {
-                guard !Task.isCancelled else { return }
-                self.lyricsState = .failed
-                Self.log.warning("lyrics fetch failed for \(state.title.prefix(12), privacy: .public): \(error.localizedDescription, privacy: .public)")
+
+                guard !Task.isCancelled,
+                      generation == self.lyricsGeneration else {
+                    return
+                }
+
+                self.lyricsState =
+                    .failed
+
+                self.syncEngine
+                    .setLyrics([])
+
+                Self.log.warning(
+                    "lyrics fetch failed for \(state.title.prefix(12), privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
             }
         }
     }
